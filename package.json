@@ -1,0 +1,71 @@
+{
+  "name": "ruby-nav",
+  "displayName": "Ruby Navigation",
+  "publisher": "alysontrizotto",
+  "author": {
+    "name": "Alyson Trizotto",
+    "email": "alysontrizotto1@gmail.com"
+  },
+  "description": "Ruby/Rails navigation: go-to-definition and find-references (AST-based).",
+  "version": "1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alysontrizotto/ruby-nav-pro"
+  },
+  "engines": {
+    "vscode": ">=1.70.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:ruby"
+  ],
+  "main": "./extension.js",
+  "configurationDefaults": {
+    "[ruby]": {
+      "editor.definitionProvider": false
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "rubyNav.goToDefinitionManual",
+        "title": "Ruby: Go to Definition (Manual)"
+      },
+      {
+        "command": "rubyNav.showReferences",
+        "title": "Ruby: Show References"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "rubyNav.goToDefinitionManual",
+        "key": "ctrl+d",
+        "when": "editorTextFocus && editorLangId == 'ruby'"
+      },
+      {
+        "command": "rubyNav.showReferences",
+        "key": "ctrl+shift+d",
+        "when": "editorTextFocus && editorLangId == 'ruby'"
+      }
+    ],
+    "languages": [
+      {
+        "id": "ruby",
+        "aliases": [
+          "Ruby",
+          "ruby"
+        ],
+        "extensions": [
+          ".rb",
+          ".rake",
+          ".gemspec",
+          ".ru",
+          ".erb"
+        ],
+        "configuration": "./syntaxes/ruby.tmLanguage.json"
+      }
+    ]
+  }
+}
