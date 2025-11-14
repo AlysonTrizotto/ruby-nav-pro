@@ -12,6 +12,7 @@ let pending = {};
 
 //
 // -------------------------------
+<<<<<<< HEAD
 // Context Analysis
 // -------------------------------
 //
@@ -69,6 +70,8 @@ function detectLinePattern(lineText) {
 
 //
 // -------------------------------
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
 // Utils
 // -------------------------------
 //
@@ -155,17 +158,24 @@ async function goToDefinitionManual() {
 
   const pos = editor.selection.active;
   const doc = editor.document;
+<<<<<<< HEAD
   
   // Melhorar a detecção de contexto
   const range = doc.getWordRangeAtPosition(pos, /[A-Za-z0-9_:!?]+/);
+=======
+  const range = doc.getWordRangeAtPosition(pos);
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
   if (!range) return;
 
   const word = doc.getText(range);
   const file = doc.uri.fsPath;
+<<<<<<< HEAD
   
   // Analisar contexto ao redor da palavra
   const lineText = doc.lineAt(pos.line).text;
   const context = analyzeContext(lineText, word, pos.character);
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
 
   const resp = await sendRequest({
     command: "definition",
@@ -173,7 +183,10 @@ async function goToDefinitionManual() {
     file,
     line: pos.line + 1,
     col: pos.character,
+<<<<<<< HEAD
     context: context  // Enviar contexto para o servidor
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
   });
 
   if (!resp) return;
@@ -232,15 +245,21 @@ async function showReferences() {
   if (!range) return;
 
   const word = doc.getText(range);
+<<<<<<< HEAD
   
   // Analisar contexto para referências mais inteligentes
   const lineText = doc.lineAt(pos.line).text;
   const context = analyzeContext(lineText, word, pos.character);
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
 
   const resp = await sendRequest({
     command: "references",
     symbol: word,
+<<<<<<< HEAD
     context: context  // Enviar contexto para melhorar precisão
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
   });
 
   if (!resp || resp.length === 0) {
@@ -320,10 +339,13 @@ function activate(context) {
       "rubyNav.showReferences",
       showReferences
     ),
+<<<<<<< HEAD
     vscode.commands.registerCommand(
       "rubyNav.debugContext",
       debugContext
     ),
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
     statusBar
   );
 }
@@ -334,6 +356,7 @@ function deactivate() {
   } catch (_) {}
 }
 
+<<<<<<< HEAD
 //
 // -------------------------------
 // Debug Context
@@ -359,3 +382,6 @@ async function debugContext() {
 }
 
 module.exports = { activate, deactivate };
+=======
+module.exports = { activate, deactivate };
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380

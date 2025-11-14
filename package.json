@@ -36,10 +36,13 @@
       {
         "command": "rubyNav.showReferences",
         "title": "Ruby: Show References"
+<<<<<<< HEAD
       },
       {
         "command": "rubyNav.debugContext",
         "title": "Ruby: Debug Context"
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
       }
     ],
     "keybindings": [
@@ -72,4 +75,8 @@
       }
     ]
   }
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380

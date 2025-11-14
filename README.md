@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Ruby Nav - Context-Aware Ruby Navigation
 
 Extensão VS Code que fornece navegação inteligente para código Ruby/Rails com **análise de contexto semântico**.
@@ -56,3 +57,8 @@ product.save # Vai direto para Product#save
 ---
 
 **Diferença principal**: Enquanto outras extensões fazem busca textual (Ctrl+F), esta entende **semanticamente** o que você está procurando.
+=======
+Ruby Nav
+
+This package implements go-to-definition and find-references using Ripper AST scanning, optimized for large monolith Rails projects. It indexes in background, provides progress updates and supports QuickPick to choose among multiple targets.
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380

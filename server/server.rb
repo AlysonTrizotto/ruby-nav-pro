@@ -429,10 +429,42 @@ end
 # ================================================================
 def index_file(file)
   text = File.read(file)
+<<<<<<< HEAD
   
   # Indexação contextual melhorada
   index_with_context(text, file)
   
+=======
+  scan_relations_text(text).each do |sym|
+    @relations[sym] << abs(file)
+  end
+
+  guessed = path_to_const(file)
+  if guessed && !guessed.empty?
+    @const_map[guessed] ||= []
+    @const_map[guessed] << abs(file)
+    store_def(guessed, {
+      "type" => "const",
+      "name" => guessed.split("::").last,
+      "fq"   => guessed,
+      "path" => abs(file),
+      "line" => 1,
+      "col"  => 0
+    })
+  end
+
+  text.scan(/^\s*(class|module)\s+([A-Z][A-Za-z0-9_:]*)/) do |kind, fq|
+    store_def(fq, {
+      "type" => kind,
+      "name" => fq.split("::").last,
+      "fq"   => fq,
+      "path" => abs(file),
+      "line" => nil,
+      "col"  => 0
+    })
+  end
+
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
   defs, calls = parse_defs_and_calls(file)
   defs.each do |d|
     store_def(d["fq"], d)
@@ -448,6 +480,7 @@ def index_file(file)
   end
 end
 
+<<<<<<< HEAD
 def index_with_context(text, file)
   # Indexar constantes e classes com contexto de namespace
   current_namespace = []
@@ -494,6 +527,8 @@ def index_with_context(text, file)
   end
 end
 
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
 def index_workspace
   files = list_rb_files
   total = files.size
@@ -522,6 +557,7 @@ def sanitize(list)
   list.reject { |c| c["path"].nil? || !File.exist?(c["path"]) }
 end
 
+<<<<<<< HEAD
 def findMethodDefinitions(method_name, receiver_type, context)
   results = []
   
@@ -624,6 +660,8 @@ def findReferencesWithContext(symbol, context)
   refs
 end
 
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
 def send_reply(id, result)
   STDOUT.puts({ reply: id, result: result }.to_json)
   STDOUT.flush
@@ -644,6 +682,7 @@ STDIN.each_line do |line|
   case cmd
   when "definition"
     word = req["word"]
+<<<<<<< HEAD
     context = req["context"] || {}
 
     # Use contexto para filtrar resultados mais relevantes
@@ -653,6 +692,8 @@ STDIN.each_line do |line|
       send_reply(id, candidates)
       next
     end
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
 
     # if clicking controller#action like reservations#cancel
     # =========================================
@@ -734,7 +775,10 @@ STDIN.each_line do |line|
 
   when "references"
     sym = req["symbol"]
+<<<<<<< HEAD
     context = req["context"] || {}
+=======
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
 
     # handle controller#action references if requested as 'controller#action'
     if sym && sym.include?("#")
@@ -767,6 +811,7 @@ STDIN.each_line do |line|
       next
     end
 
+<<<<<<< HEAD
     # Use contexto para filtrar referências mais relevantes
     if context["isMethodCall"] && context["receiver"]
       items = findReferencesWithContext(sym, context)
@@ -774,6 +819,10 @@ STDIN.each_line do |line|
       # normal symbol references (class or constant usages)
       items = @references[sym] || []
     end
+=======
+    # normal symbol references (class or constant usages)
+    items = @references[sym] || []
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
 
     # include const_map definitions
     if @const_map[sym]
@@ -824,4 +873,8 @@ STDIN.each_line do |line|
 
   STDOUT.puts({ reply: id, result: result }.to_json)
   STDOUT.flush
+<<<<<<< HEAD
 end
+=======
+end
+>>>>>>> cb345dd5fd9a99a68d4978b36643c4b851446380
