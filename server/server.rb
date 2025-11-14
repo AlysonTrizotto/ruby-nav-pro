@@ -55,6 +55,14 @@ rescue
 end
 
 # ================================================================
+# Instance method finder
+# ================================================================
+def find_instance_method(class_name, method_name)
+  return [] unless @instance_methods[class_name]
+  @instance_methods[class_name].select { |m| m["name"] == method_name }
+end
+
+# ================================================================
 # RouteIndexer - parse minimal routes DSL to map controller#action
 # ================================================================
 module RouteIndexer
@@ -116,7 +124,9 @@ module RouteIndexer
         res = $1.to_s
         # push resource block or handle simple resources
         if $2
-          stack << { type: :res, base: res, controller: res }
+          # Guardar controller atual para uso em rotas member
+          ctrl = build_controller_name(controller_prefix.call, res)
+          stack << { type: :res, base: res, controller: res, controller_class: ctrl }
         else
           # add basic RESTful patterns (index, show, create, update, destroy) as placeholders
           prefix = [path_prefix.call, res].reject(&:empty?).join("/")
@@ -186,7 +196,8 @@ module RouteIndexer
         res = stack.reverse.find { |s| s[:type] == :res }
         if res
           base = res[:base]
-          ctrl = build_controller_name(controller_prefix.call, base)
+          # Usar controller armazenado no contexto se disponível
+          ctrl = res[:controller_class] || build_controller_name(controller_prefix.call, base)
           full_path = "/" + [path_prefix.call, base, action].reject(&:empty?).join("/")
           routes << Route.new(verb, full_path, ctrl, action, path)
         end
@@ -199,7 +210,17 @@ module RouteIndexer
         path_suffix = $2
         controller_raw = $3
         action = $4
-        ctrl = controller_string_to_controller_class(controller_raw, controller_prefix.call)
+        
+        # Se estiver dentro de um bloco resources, usar o controller atual do contexto
+        res = stack.reverse.find { |s| s[:type] == :res }
+        if res && controller_raw == res[:base]
+          # Mesmo controller do resource atual
+          ctrl = build_controller_name(controller_prefix.call, controller_raw)
+        else
+          # Controller diferente, aplicar namespace normalmente
+          ctrl = controller_string_to_controller_class(controller_raw, controller_prefix.call)
+        end
+        
         full_path = "/" + [path_prefix.call, path_suffix].reject(&:empty?).join("/")
         routes << Route.new(verb, full_path, ctrl, action, path)
         next
@@ -321,10 +342,11 @@ end
 def parse_defs_and_calls(file)
   code = File.read(file)
   sexp = Ripper.sexp(code)
-  return [[], []] unless sexp.is_a?(Array)
+  return [[], [], {}] unless sexp.is_a?(Array)
 
   defs = []
   calls = []
+  assignments = {} # Rastrear atribuições de variáveis
   stack = []
 
   walk = lambda do |node|
@@ -352,6 +374,18 @@ def parse_defs_and_calls(file)
         mname = node[1][1]
         pos = node[1][2] || [1, 0]
         fq = (stack + [mname]).join("::")
+        
+        # Armazenar como método de instância se estiver dentro de uma classe
+        if stack.any? && stack.last =~ /Controller$/
+          class_name = stack.last
+          @instance_methods[class_name] << {
+            "name" => mname,
+            "path" => abs(file),
+            "line" => pos[0],
+            "col"  => pos[1]
+          }
+        end
+        
         defs << {
           "type" => "method",
           "name" => mname,
@@ -399,17 +433,47 @@ def parse_defs_and_calls(file)
           }
         end
       end
-
+      
+    when :assign
+      # Detectar atribuições: variavel = alguma_coisa
+      if node[1] && node[1][0] == :var_field && node[2]
+        var_name = node[1][1][1] if node[1][1] && node[1][1][0] == :@ident
+        if var_name
+          # Tentar extrair a classe sendo instanciada
+          assigned_class = extract_const_from_receiver(node[2])
+          if assigned_class
+            assignments[var_name] = assigned_class
+          end
+        end
+      end
+      
+    when :vcall
+      # Chamadas de métodos em variáveis: variavel.metodo
+      if node[1] && node[1][0] == :@ident
+        method_name = node[1][1]
+        # Procurar por atribuições anteriores para inferir a classe
+        if assignments[method_name]
+          calls << {
+            "receiver" => assignments[method_name],
+            "method"   => method_name,
+            "path"     => abs(file),
+            "line"     => node[1][2] ? node[1][2][0] : 1,
+            "col"      => node[1][2] ? node[1][2][1] : 0,
+            "preview"  => preview_line(file, node[1][2] ? node[1][2][0] : 1)
+          }
+        end
+      end
+      
     else
       node.each { |c| walk.call(c) if c.is_a?(Array) }
     end
   end
 
   walk.call(sexp)
-  [defs, calls]
+  [defs, calls, assignments]
 rescue => e
   STDERR.puts "AST parse error #{file}: #{e.message}"
-  [[], []]
+  [[], [], {}]
 end
 
 # ================================================================
@@ -419,6 +483,7 @@ end
 @const_map  = {}
 @relations  = Hash.new { |h, k| h[k] = Set.new }
 @references = Hash.new { |h, k| h[k] = [] }
+@instance_methods = Hash.new { |h, k| h[k] = [] } # Métodos de instância por classe
 
 def store_def(key, entry)
   @index[key] << entry
@@ -458,7 +523,7 @@ def index_file(file)
     })
   end
 
-  defs, calls = parse_defs_and_calls(file)
+  defs, calls, assignments = parse_defs_and_calls(file)
   defs.each do |d|
     store_def(d["fq"], d)
     store_def(d["name"], d)
@@ -470,6 +535,17 @@ def index_file(file)
     @references[recv] << c
     short = recv.split("::").last
     @references[short] << c
+  end
+  
+  # Armazenar atribuições de variáveis para referência futura
+  assignments.each do |var_name, class_name|
+    @references[class_name] ||= []
+    @references[class_name] << {
+      "type" => "assignment",
+      "variable" => var_name,
+      "class" => class_name,
+      "path" => abs(file)
+    }
   end
 end
 
@@ -507,8 +583,8 @@ def send_reply(id, result)
 end
 
 # ================================================================
-# IPC loop: handles definition, references, reindex
-# ================================================================
+  # IPC loop: handles definition, references, reindex
+  # ================================================================
 STDIN.each_line do |line|
   req = JSON.parse(line) rescue nil
   next unless req
@@ -521,6 +597,7 @@ STDIN.each_line do |line|
   case cmd
   when "definition"
     word = req["word"]
+    current_file = req["file"] # Arquivo onde o usuário clicou
 
     # if clicking controller#action like reservations#cancel
     # =========================================
@@ -530,16 +607,62 @@ STDIN.each_line do |line|
       ctrl_raw, act = word.split("#", 2)
 
       # 1. descobrir controllers válidos via RouteIndexer
-      controllers = ROUTES
+      # Primeiro tenta encontrar controllers que tenham exatamente esta action
+      route_controllers = ROUTES
         .select { |r| r.action == act && r.controller.downcase.include?(ctrl_raw.downcase) }
         .map(&:controller)
         .uniq
 
-      # fallback (casos simples)
-      if controllers.empty?
-        controllers << (
-          ctrl_raw =~ /::/ ? ctrl_raw : "#{ctrl_raw.camelize}Controller"
-        )
+      # 2. Se encontrou controllers via rotas, priorizar pela profundidade do namespace
+      # Quanto mais específico (mais ::), maior a prioridade
+      if route_controllers.any?
+        # Ordenar por profundidade do namespace (mais específico primeiro)
+        route_controllers.sort_by! { |c| c.split("::").length }.reverse!
+        
+        # Priorização adicional: se estiver em um arquivo que contenha parte do namespace
+        if current_file && route_controllers.length > 1
+          route_controllers.sort_by! do |c| 
+            # Calcular score baseado em correspondência com o caminho do arquivo
+            score = 0
+            parts = c.split("::")
+            parts.each do |part|
+              if current_file.downcase.include?(part.downcase)
+                score += 10 # Pontuação alta para correspondência de namespace
+              end
+            end
+            # Manter ordenação por profundidade, mas adicionar score
+            [-c.split("::").length, -score]
+          end
+        end
+        
+        controllers = route_controllers
+      else
+        # Fallback: procurar controllers indexados que correspondam
+        candidates = @index.keys.select { |k| k.downcase.include?(ctrl_raw.downcase) && k.end_with?("Controller") }
+        
+        # Priorização por contexto de arquivo
+        if current_file && candidates.length > 1
+          candidates.sort_by! do |c|
+            score = 0
+            parts = c.split("::")
+            parts.each do |part|
+              if current_file.downcase.include?(part.downcase)
+                score += 10
+              end
+            end
+            [-c.split("::").length, -score]
+          end
+        elsif candidates.any?
+          # Se houver múltiplos, priorizar o mais específico
+          candidates = candidates.sort_by { |c| c.split("::").length }.reverse
+        end
+        
+        if candidates.any?
+          controllers = candidates
+        else
+          # fallback final (casos simples)
+          controllers = [ctrl_raw =~ /::/ ? ctrl_raw : "#{ctrl_raw.camelize}Controller"]
+        end
       end
 
       results = []
@@ -551,7 +674,7 @@ STDIN.each_line do |line|
           file = entry["path"]
           next unless File.exist?(file)
 
-          # 2. Procurar a linha exata da action
+          # 3. Procurar a linha exata da action
           found = nil
           File.foreach(file).with_index(1) do |txt, ln|
             if txt =~ /^\s*def\s+#{act}[\s\(]/
@@ -568,8 +691,31 @@ STDIN.each_line do |line|
           }
         end
       end
+      
+      # Se não encontrou controllers, tentar encontrar métodos de instância
+      if results.empty?
+        # Procurar por métodos de instância em qualquer classe que corresponda
+        possible_classes = @instance_methods.keys.select { |k| k.downcase.include?(ctrl_raw.downcase) }
+        possible_classes.each do |class_name|
+          methods = find_instance_method(class_name, act)
+          methods.each do |method|
+            results << {
+              "path" => method["path"],
+              "line" => method["line"],
+              "col"  => method["col"],
+              "fq"   => "#{class_name}##{act}"
+            }
+          end
+        end
+      end
 
-      # 3. Retorna apenas os resultados diretos (sem QuickPick)
+      # 4. Se encontrou múltiplos resultados, priorizar o mais relevante
+      # Ordenar por: profundidade do namespace + linha do método
+      if results.length > 1
+        results.sort_by! { |r| [r["fq"].split("::").length, r["line"]] }.reverse!
+      end
+
+      # 5. Retorna apenas os resultados diretos (sem QuickPick)
       send_reply(id, results)
       next
     end
@@ -636,6 +782,28 @@ STDIN.each_line do |line|
 
     # normal symbol references (class or constant usages)
     items = @references[sym] || []
+    
+    # Se for uma chamada de método em variável (ex: operator_class.set_white_label_request)
+    if sym.include?(".")
+      var_name, method_name = sym.split(".", 2)
+      # Procurar por atribuições dessa variável
+      if @references[var_name]
+        @references[var_name].each do |ref|
+          if ref["type"] == "assignment" && ref["class"]
+            # Encontrar o método de instância na classe
+            methods = find_instance_method(ref["class"], method_name)
+            methods.each do |method|
+              items << {
+                "path" => method["path"],
+                "line" => method["line"],
+                "col"  => method["col"],
+                "preview" => "#{ref["class"]}##{method_name}"
+              }
+            end
+          end
+        end
+      end
+    end
 
     # include const_map definitions
     if @const_map[sym]
