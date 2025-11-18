@@ -13,20 +13,11 @@
     "url": "https://github.com/alysontrizotto/ruby-nav-pro"
   },
   "engines": {
-    "vscode": ">=1.70.0"
+    "vscode": "^1.85.0"
   },
-  "categories": [
-    "Programming Languages"
-  ],
-  "activationEvents": [
-    "onLanguage:ruby"
-  ],
+  "categories": ["Programming Languages"],
+  "activationEvents": ["onLanguage:ruby"],
   "main": "./extension.js",
-  "configurationDefaults": {
-    "[ruby]": {
-      "editor.definitionProvider": false
-    }
-  },
   "contributes": {
     "commands": [
       {
@@ -53,17 +44,8 @@
     "languages": [
       {
         "id": "ruby",
-        "aliases": [
-          "Ruby",
-          "ruby"
-        ],
-        "extensions": [
-          ".rb",
-          ".rake",
-          ".gemspec",
-          ".ru",
-          ".erb"
-        ],
+        "aliases": ["Ruby", "ruby"],
+        "extensions": [".rb", ".rake", ".gemspec", ".ru", ".erb"],
         "configuration": "./syntaxes/ruby.tmLanguage.json"
       }
     ]

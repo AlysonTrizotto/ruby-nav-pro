@@ -577,281 +577,292 @@ def sanitize(list)
   list.reject { |c| c["path"].nil? || !File.exist?(c["path"]) }
 end
 
+def find_symbol_occurrences(file, sym)
+  results = []
+  File.foreach(file).with_index(1) do |line, ln|
+    idx = line.index(sym)
+    next unless idx
+
+    results << {
+      "path"    => abs(file),
+      "line"    => ln,
+      "col"     => idx,
+      "preview" => line.strip,
+      "type"    => "text"
+    }
+  end
+  results
+rescue
+  []
+end
+
 def send_reply(id, result)
   STDOUT.puts({ reply: id, result: result }.to_json)
   STDOUT.flush
 end
 
+# Adicionar require necessário
+require 'etc'
+
+class Server
+  CACHE_SIZE = 800
+  THREAD_POOL_SIZE = [Etc.nprocessors, 2].max
+
+  def initialize
+    @running = true
+    @queue = Queue.new
+    @pool = Array.new(THREAD_POOL_SIZE) { Thread.new { worker_loop } }
+    puts "Servidor nativo iniciado com #{THREAD_POOL_SIZE} threads"
+  end
+
+  def worker_loop
+    while @running
+      task = @queue.pop
+      process_task(task)
+    end
+  end
+
+  def stop
+    @running = false
+    @pool.each { |t| t.wakeup if t.status == 'sleep' }
+    @pool.each(&:join)
+    puts "Servidor finalizado com sucesso"
+  end
+  BATCH_SIZE = 150
+
+  def index_files(files)
+    files.each_slice(BATCH_SIZE) do |batch|
+      contexts = batch.parallel_map(threads: THREAD_POOL_SIZE) do |file|
+        next if @processed_files.include?(file)
+        [file, analyze_context(file)]
+      end.compact
+
+      @mutex.synchronize do
+        contexts.each { |f, ctx| @context_cache[f] = ctx }
+        @processed_files.merge(contexts.map(&:first))
+        send_progress_update
+      end
+    end
+  end
+
+  def analyze_context(file_path)
+    parts = File.dirname(file_path).split('/')
+    root_idx = parts.index { |p| ['app','lib'].include?(p) }
+    return {} unless root_idx
+
+    {
+      root: parts[root_idx],
+      module: parts[root_idx + 1],
+      hierarchy: parts[root_idx..root_idx+2]
+    }.compact
+  end
+end
+
+
+def context_score(request_context, result_context)
+  # Bloquear completamente módulos diferentes
+  return -3000 if request_context[:root] != result_context[:root] # app vs lib
+  return -2500 if request_context[:module] != result_context[:module]
+
+  # Exigir correspondência completa da hierarquia do módulo
+  return 2000 if request_context[:full_hierarchy] == result_context[:full_hierarchy]
+
+  # Penalizar progressivamente por divergências
+  mismatch_level = request_context[:full_hierarchy].zip(result_context[:full_hierarchy]).take_while { |a,b| a == b }.size
+  score = mismatch_level * 500
+
+  # Bônus decrescente para submodules
+  common_submodules = request_context[:submodules] & result_context[:submodules]
+  score += common_submodules.size * 300
+
+  score.positive? ? score : 0
+end
+
+def extract_context_from_path(path)
+  return nil unless path
+  parts = File.dirname(path.to_s).split("/")
+  idx = parts.index { |p| ["app", "lib"].include?(p) }
+  return nil unless idx
+
+  full = parts[idx..-1]
+  {
+    root: parts[idx],
+    module: parts[idx + 1],
+    full_hierarchy: full,
+    submodules: full[2..-1] || []
+  }
+end
+
 # ================================================================
-  # IPC loop: handles definition, references, reindex
-  # ================================================================
-STDIN.each_line do |line|
-  req = JSON.parse(line) rescue nil
-  next unless req
-  id = req["id"]
-  cmd = req["command"]
-  next unless id
+# Command handlers (JSON protocol over STDIN/STDOUT)
+# ================================================================
 
-  result = nil
+def handle_definition(req)
+  word = req["word"] || req["symbol"]
+  return [] unless word
 
-  case cmd
-  when "definition"
-    word = req["word"]
-    current_file = req["file"] # Arquivo onde o usuário clicou
+  list = []
 
-    # if clicking controller#action like reservations#cancel
-    # =========================================
-    # GO DIRECTLY TO METHOD IN CONTROLLER
-    # =========================================
-    if word.include?("#")
-      ctrl_raw, act = word.split("#", 2)
+   # Caso especial: controller#action ou reservations#cancel
+  if word.include?("#")
+    ctrl_raw, act = word.split("#", 2)
 
-      # 1. descobrir controllers válidos via RouteIndexer
-      # Primeiro tenta encontrar controllers que tenham exatamente esta action
-      route_controllers = ROUTES
-        .select { |r| r.action == act && r.controller.downcase.include?(ctrl_raw.downcase) }
-        .map(&:controller)
-        .uniq
-
-      # 2. Se encontrou controllers via rotas, priorizar pela profundidade do namespace
-      # Quanto mais específico (mais ::), maior a prioridade
-      if route_controllers.any?
-        # Ordenar por profundidade do namespace (mais específico primeiro)
-        route_controllers.sort_by! { |c| c.split("::").length }.reverse!
-        
-        # Priorização adicional: se estiver em um arquivo que contenha parte do namespace
-        if current_file && route_controllers.length > 1
-          route_controllers.sort_by! do |c| 
-            # Calcular score baseado em correspondência com o caminho do arquivo
-            score = 0
-            parts = c.split("::")
-            parts.each do |part|
-              if current_file.downcase.include?(part.downcase)
-                score += 10 # Pontuação alta para correspondência de namespace
-              end
-            end
-            # Manter ordenação por profundidade, mas adicionar score
-            [-c.split("::").length, -score]
-          end
-        end
-        
-        controllers = route_controllers
-      else
-        # Fallback: procurar controllers indexados que correspondam
-        candidates = @index.keys.select { |k| k.downcase.include?(ctrl_raw.downcase) && k.end_with?("Controller") }
-        
-        # Priorização por contexto de arquivo
-        if current_file && candidates.length > 1
-          candidates.sort_by! do |c|
-            score = 0
-            parts = c.split("::")
-            parts.each do |part|
-              if current_file.downcase.include?(part.downcase)
-                score += 10
-              end
-            end
-            [-c.split("::").length, -score]
-          end
-        elsif candidates.any?
-          # Se houver múltiplos, priorizar o mais específico
-          candidates = candidates.sort_by { |c| c.split("::").length }.reverse
-        end
-        
-        if candidates.any?
-          controllers = candidates
-        else
-          # fallback final (casos simples)
-          controllers = [ctrl_raw =~ /::/ ? ctrl_raw : "#{ctrl_raw.camelize}Controller"]
-        end
-      end
-
-      results = []
-
-      controllers.each do |fq|
-        next unless @index[fq] # achou o controller
-
-        @index[fq].each do |entry|
-          file = entry["path"]
-          next unless File.exist?(file)
-
-          # 3. Procurar a linha exata da action
-          found = nil
-          File.foreach(file).with_index(1) do |txt, ln|
-            if txt =~ /^\s*def\s+#{act}[\s\(]/
-              found = ln
-              break
-            end
-          end
-
-          results << {
-            "path" => file,
-            "line" => found || 1,
-            "col"  => 0,
-            "fq"   => "#{fq}##{act}"
-          }
-        end
-      end
-      
-      # Se não encontrou controllers, tentar encontrar métodos de instância
-      if results.empty?
-        # Procurar por métodos de instância em qualquer classe que corresponda
-        possible_classes = @instance_methods.keys.select { |k| k.downcase.include?(ctrl_raw.downcase) }
-        possible_classes.each do |class_name|
-          methods = find_instance_method(class_name, act)
-          methods.each do |method|
-            results << {
-              "path" => method["path"],
-              "line" => method["line"],
-              "col"  => method["col"],
-              "fq"   => "#{class_name}##{act}"
-            }
-          end
-        end
-      end
-
-      # 4. Se encontrou múltiplos resultados, priorizar o mais relevante
-      # Ordenar por: profundidade do namespace + linha do método
-      if results.length > 1
-        results.sort_by! { |r| [r["fq"].split("::").length, r["line"]] }.reverse!
-      end
-
-      # 5. Retorna apenas os resultados diretos (sem QuickPick)
-      send_reply(id, results)
-      next
+    # Tentar resolver para nome de controller completo
+    ctrl_class = if ctrl_raw.include?("::")
+      ctrl_raw
+    else
+      ctrl_raw.split("_").map(&:capitalize).join + "Controller"
     end
 
-
-
-    # normal cases: look up by fq, simple name, or guessed path
-    candidates = @index[word] || []
-
-    if candidates.empty? && word.include?("::") && @const_map[word]
-      candidates = @const_map[word].map { |f| { "path" => f, "line" => 1, "col" => 0, "fq" => word } }
-    end
-
-    if candidates.empty? && word =~ /::|^[A-Z]/
-      guessed_path = word.split("::").map { |p| p.gsub(/([a-z])([A-Z])/, "\\1_\\2").downcase }.join("/") + ".rb"
-      guessed_abs = abs(guessed_path)
-      if guessed_abs && File.exist?(guessed_abs)
-        candidates = [{ "path" => guessed_abs, "line" => 1, "col" => 0, "fq" => word }]
-      end
-    end
-
-    result = sanitize(candidates.map do |c|
-      {
-        "path" => abs(c["path"]),
-        "line" => c["line"] || 1,
-        "col"  => c["col"]  || 0,
-        "fq"   => c["fq"]   || c["name"]
-      }
-    end)
-
-  when "references"
-    sym = req["symbol"]
-
-    # handle controller#action references if requested as 'controller#action'
-    if sym && sym.include?("#")
-      ctrl_raw, act = sym.split("#", 2)
-      ctrl = if ctrl_raw =~ /::/ || ctrl_raw.end_with?("Controller")
-               ctrl_raw
-             else
-               ctrl_raw.split("_").map(&:capitalize).join + "Controller"
-             end
-
-      list = []
-      if ROUTE_BY_ACTION["#{ctrl}##{act}"]
-        ROUTE_BY_ACTION["#{ctrl}##{act}"].each do |r|
+    key = "#{ctrl_class}##{act}"
+    if ROUTE_BY_ACTION[key]
+      ROUTE_BY_ACTION[key].each do |route|
+        methods = find_instance_method(route.controller, act)
+        methods.each do |m|
           list << {
-            "path"    => abs(r.file_path),
-            "line"    => 1,
-            "col"     => 0,
-            "preview" => "#{r.verb} #{r.path}"
+            "type" => "method",
+            "name" => act,
+            "fq"   => "#{route.controller}##{act}",
+            "path" => m["path"],
+            "line" => m["line"],
+            "col"  => m["col"],
+            "preview" => preview_line(m["path"], m["line"])
           }
         end
       end
-
-      # also include code references (method calls)
-      refs = @references[ctrl] || []
-      refs += @references[ctrl.split("::").last] if ctrl.include?("::")
-      list += refs
-
-      result = sanitize(list.uniq { |r| "#{r["path"]}:#{r["line"]}" })
-      send_reply(id, result)
-      next
     end
+  end
 
-    # normal symbol references (class or constant usages)
-    items = @references[sym] || []
-    
-    # Se for uma chamada de método em variável (ex: operator_class.set_white_label_request)
-    if sym.include?(".")
-      var_name, method_name = sym.split(".", 2)
-      # Procurar por atribuições dessa variável
-      if @references[var_name]
-        @references[var_name].each do |ref|
-          if ref["type"] == "assignment" && ref["class"]
-            # Encontrar o método de instância na classe
-            methods = find_instance_method(ref["class"], method_name)
-            methods.each do |method|
-              items << {
-                "path" => method["path"],
-                "line" => method["line"],
-                "col"  => method["col"],
-                "preview" => "#{ref["class"]}##{method_name}"
-              }
-            end
-          end
-        end
+  # Primeiro tenta pelo nome exato (método ou constante)
+  if @index[word]
+    list.concat(@index[word])
+  end
+
+  # Se for algo como Foo::Bar, também tenta a parte final
+  if word.include?("::")
+    short = word.split("::").last
+    if @index[short]
+      list.concat(@index[short])
+    end
+  end
+
+  list = sanitize(list.uniq)
+
+  origin_file = req["file"]
+  if origin_file
+    origin_ctx = extract_context_from_path(origin_file)
+    if origin_ctx
+      list.sort_by! do |entry|
+        ctx = extract_context_from_path(entry["path"])
+        ctx ? -context_score(origin_ctx, ctx) : 0
       end
     end
+  end
 
-    # include const_map definitions
-    if @const_map[sym]
-      @const_map[sym].each do |f|
-        items << {
-          "path"    => abs(f),
+  list
+end
+
+def handle_references(req)
+  sym = req["symbol"] || req["word"]
+  return [] unless sym
+
+  list = []
+
+  if @references[sym]
+    list.concat(@references[sym])
+  end
+
+  # Para símbolos com namespace ou variação simples, tenta chave reduzida
+  if sym.include?("::")
+    short = sym.split("::").last
+    if @references[short]
+      list.concat(@references[short])
+    end
+  end
+
+  # Caso especial: controller#action vindo de rotas
+  if sym.include?("#")
+    ctrl_raw, act = sym.split("#", 2)
+
+    ctrl_class = if ctrl_raw.include?("::")
+      ctrl_raw
+    else
+      ctrl_raw.split("_").map(&:capitalize).join + "Controller"
+    end
+
+    key = "#{ctrl_class}##{act}"
+    if ROUTE_BY_ACTION[key]
+      ROUTE_BY_ACTION[key].each do |route|
+        list << {
+          "path"    => abs(route.file_path),
           "line"    => 1,
           "col"     => 0,
-          "preview" => "defined here"
+          "preview" => "#{route.verb} #{route.path}",
+          "type"    => "route"
         }
       end
     end
-
-    # include textual relations from routes and other files
-    (@relations[sym] || []).each do |f|
-      items << {
-        "path"    => abs(f),
-        "line"    => 1,
-        "col"     => 0,
-        "preview" => "referenced here"
-      }
-    end
-
-    # include route definitions pointing to controller if symbol looks like controller
-    if sym =~ /^[A-Z]/
-      # try controller mapping
-      ctrl_name = sym.end_with?("Controller") ? sym : "#{sym}Controller"
-      if ROUTE_BY_CONTROLLER[ctrl_name]
-        ROUTE_BY_CONTROLLER[ctrl_name].each do |r|
-          items << {
-            "path"    => abs(r.file_path),
-            "line"    => 1,
-            "col"     => 0,
-            "preview" => "#{r.verb} #{r.path}"
-          }
-        end
-      end
-    end
-
-    result = sanitize(items.uniq { |r| "#{r["path"]}:#{r["line"]}" })
-
-  when "reindex"
-    Thread.new { index_workspace }
-    result = { "ok" => true }
-  else
-    result = nil
   end
 
-  STDOUT.puts({ reply: id, result: result }.to_json)
-  STDOUT.flush
+  # Fallback: se ainda não há referências estruturadas, usar @relations para
+  # localizar arquivos que mencionam a constante (ex.: RoutesBasis)
+  if list.empty? && @relations[sym]
+    @relations[sym].each do |file|
+      list.concat(find_symbol_occurrences(file, sym))
+    end
+  end
+
+  list = sanitize(list.uniq)
+
+  origin_file = req["file"]
+  if origin_file
+    origin_ctx = extract_context_from_path(origin_file)
+    if origin_ctx
+      list.sort_by! do |entry|
+        ctx = extract_context_from_path(entry["path"])
+        ctx ? -context_score(origin_ctx, ctx) : 0
+      end
+    end
+  end
+
+  list
 end
+
+def process_command(cmd)
+  id = cmd["id"]
+  command = cmd["command"]
+
+  return unless id && command
+
+  result = case command
+           when "definition"
+             handle_definition(cmd)
+           when "references"
+             handle_references(cmd)
+           else
+             nil
+           end
+
+  send_reply(id, result)
+rescue => e
+  STDERR.puts "Command error: #{e.class}: #{e.message}"
+  send_reply(id, nil) if id
+end
+
+# Main loop: lê uma linha JSON por vez de STDIN
+Thread.new do
+  while (line = STDIN.gets)
+    line = line.strip
+    next if line.empty?
+
+    begin
+      msg = JSON.parse(line)
+    rescue JSON::ParserError
+      STDERR.puts "Invalid JSON input: #{line.inspect}"
+      next
+    end
+
+    next unless msg.is_a?(Hash)
+    process_command(msg)
+  end
+end.join

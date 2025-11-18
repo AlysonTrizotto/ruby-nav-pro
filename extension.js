@@ -172,6 +172,7 @@ async function showReferences() {
   const resp = await sendRequest({
     command: "references",
     symbol: word,
+    file: doc.uri.fsPath,
   });
 
   if (!resp || resp.length === 0) {
@@ -181,30 +182,103 @@ async function showReferences() {
     return;
   }
 
-  const items = resp.map((r) => ({
-    label: r.preview || r.label || pathRelative(r.path),
-    description: `${pathRelative(r.path)}:${r.line}`,
-    data: r,
-  }));
+  // Agrupar referências por arquivo e, dentro do arquivo, por "classe/método"
+  const grouped = new Map();
 
-  const pick = await vscode.window.showQuickPick(items, {
-    placeHolder: `Referências para ${word}`,
+  for (const r of resp) {
+    const fileKey = pathRelative(r.path || "(desconhecido)");
+    if (!grouped.has(fileKey)) grouped.set(fileKey, []);
+    grouped.get(fileKey).push(r);
+  }
+
+  const items = [];
+
+  const classify = (r) => {
+    if (r.fq) return r.fq;
+    if (r.receiver && r.method) return `${r.receiver}#${r.method}`;
+    if (r.type === "route") return "Rotas";
+    return "Uso";
+  };
+
+  for (const [fileKey, refs] of grouped.entries()) {
+    // Cabeçalho do arquivo: "### caminho/relativo"
+    items.push({
+      label: `### ${fileKey}`,
+      description: "",
+      data: null,
+    });
+
+    const byClass = new Map();
+    for (const r of refs) {
+      const key = classify(r);
+      if (!byClass.has(key)) byClass.set(key, []);
+      byClass.get(key).push(r);
+    }
+
+    for (const [clsKey, clsRefs] of byClass.entries()) {
+      // Cabeçalho de classe/método: "# Classe - Método"
+      const headerLabel = clsKey.includes("#")
+        ? `# ${clsKey.replace("#", " - ")}`
+        : `# ${clsKey}`;
+
+      items.push({
+        label: headerLabel,
+        description: "",
+        data: null,
+      });
+
+      for (const r of clsRefs) {
+        items.push({
+          label: `- ${r.preview || r.label || "(sem preview)"}`,
+          description: `${pathRelative(r.path)}:${r.line || 1}`,
+          data: r,
+        });
+      }
+    }
+  }
+
+  // Usar QuickPick com "grupos" visuais via separadores
+  const qpItems = [];
+  for (const it of items) {
+    if (it.data === null) {
+      // Cabeçalhos viram separadores
+      qpItems.push({
+        label: it.label.replace(/^#+\s*/, ""),
+        kind: vscode.QuickPickItemKind.Separator,
+      });
+    } else {
+      qpItems.push(it);
+    }
+  }
+
+  const qp = vscode.window.createQuickPick();
+  qp.items = qpItems;
+  qp.matchOnDescription = true;
+  qp.placeholder = `Referências para ${word}`;
+
+  qp.onDidChangeSelection(async (selection) => {
+    const picked = selection[0];
+    if (!picked || !picked.data) return;
+
+    const r = picked.data;
+    const uri = vscode.Uri.file(r.path);
+    const docTarget = await vscode.workspace.openTextDocument(uri);
+
+    const targetPos = new vscode.Position(
+      (r.line || 1) - 1,
+      r.col || 0
+    );
+
+    vscode.window.showTextDocument(docTarget, {
+      selection: new vscode.Range(targetPos, targetPos),
+    });
+
+    qp.hide();
   });
 
-  if (!pick) return;
-
-  const r = pick.data;
-  const uri = vscode.Uri.file(r.path);
-  const docTarget = await vscode.workspace.openTextDocument(uri);
-
-  const targetPos = new vscode.Position(
-    (r.line || 1) - 1,
-    r.col || 0
-  );
-
-  vscode.window.showTextDocument(docTarget, {
-    selection: new vscode.Range(targetPos, targetPos),
-  });
+  qp.show();
+  return;
+  // (código de navegação foi movido para o handler do QuickPick acima)
 }
 
 //
@@ -214,10 +288,31 @@ async function showReferences() {
 //
 
 function spawnServer() {
+  console.log("[ruby-nav] spawnServer called");
+
   const serverPath = path.join(__dirname, "server", "server.rb");
-  serverProcess = cp.spawn("ruby", [serverPath, "--index"], {
-    stdio: ["pipe", "pipe", "pipe"],
-    cwd: vscode.workspace.rootPath || process.cwd(),
+  try {
+    serverProcess = cp.spawn("ruby", [serverPath, "--index"], {
+      stdio: ["pipe", "pipe", "pipe"],
+      cwd: vscode.workspace.rootPath || process.cwd(),
+    });
+  } catch (e) {
+    console.error("[ruby-nav] spawn error (sync)", e);
+    return;
+  }
+
+  serverProcess.on("error", (err) => {
+    console.error("[ruby-nav] spawn error", err);
+  });
+
+  serverProcess.on("exit", (code, signal) => {
+    console.error(
+      "[ruby-nav] server exited",
+      "code=",
+      code,
+      "signal=",
+      signal
+    );
   });
 
   serverProcess.stdout.on("data", handleServerOutput);
@@ -233,6 +328,8 @@ function spawnServer() {
 //
 
 function activate(context) {
+  console.log("[ruby-nav] activate called");
+
   statusBar = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Left,
     100
