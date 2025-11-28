@@ -1,0 +1,32 @@
+name: Publish Extension
+
+on:
+  push:
+    tags:
+      - 'v*' # Dispara apenas quando você sobe uma tag como v1.3.0, v1.4.0, etc.
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 18
+
+    - name: Install Dependencies
+      run: npm install
+
+    - name: Install VSCE (VS Code Extension Manager)
+      run: npm install -g @vscode/vsce
+
+    - name: Package Extension
+      run: vsce package
+
+    - name: Publish to Open VSX Registry
+      # Usa o token armazenado nos Secrets do GitHub
+      run: npx ovsx publish *.vsix -p ${{ secrets.OVSX_TOKEN }}

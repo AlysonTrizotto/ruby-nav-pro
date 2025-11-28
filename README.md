@@ -35,6 +35,14 @@ Encontre **definições** e **referências** de classes, métodos, controllers e
     - `RubyNav: indexando...` com progresso em `%`.
     - `RubyNav pronto` ao finalizar.
 
+- **Hot-reload automático** ✨
+  - Detecta automaticamente quando você:
+    - Cria um novo arquivo `.rb`
+    - Modifica um arquivo existente
+    - Deleta um arquivo
+  - Re-indexa apenas o arquivo modificado (incremental)
+  - Não precisa reiniciar o editor!
+  - Comando manual disponível: `Ruby: Re-indexar Workspace` para re-indexação completa
 ---
 
 ## 🧠 Como funciona
@@ -75,6 +83,7 @@ Você também encontra esses comandos na Command Palette (`Ctrl+Shift+P`):
 
 - `Ruby: Go to Definition (Manual)`
 - `Ruby: Show References`
+- `Ruby: Re-indexar Workspace` (força re-indexação completa)
 
 ---
 

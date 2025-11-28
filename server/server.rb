@@ -84,7 +84,6 @@ module RouteIndexer
     lines = text.each_line.to_a
     stack = []
     routes = []
-    current_file = path
 
     # helper to current path prefix (from scopes with path or namespaces)
     path_prefix = lambda {
@@ -334,6 +333,9 @@ def collect_const_path(node, parts)
   elsif node[0] == :const_ref
     c = node[1]
     parts << c[1] if c && c[0] == :@const
+  elsif node[0] == :var_ref
+    c = node[1]
+    parts << c[1] if c && c[0] == :@const
   elsif node[0] == :@const
     parts << node[1]
   end
@@ -386,6 +388,17 @@ def parse_defs_and_calls(file)
           }
         end
         
+        # Armazenar como método de instância para qualquer classe
+        if stack.any?
+          class_name = stack.last
+          @instance_methods[class_name] << {
+            "name" => mname,
+            "path" => abs(file),
+            "line" => pos[0],
+            "col"  => pos[1]
+          }
+        end
+        
         defs << {
           "type" => "method",
           "name" => mname,
@@ -394,6 +407,68 @@ def parse_defs_and_calls(file)
           "line" => pos[0],
           "col"  => pos[1]
         }
+        
+        # Recurse into body (node[3])
+        walk.call(node[3]) if node[3].is_a?(Array)
+      end
+
+    when :defs
+      # Método de classe: def self.method_name
+      if node[1] && node[3] && node[3][0] == :@ident
+        mname = node[3][1]
+        pos = node[3][2] || [1, 0]
+        
+        if stack.any?
+          class_name = stack.last
+          # Nome completo com namespace (ex: Trips::CacheService)
+          full_class_name = stack.join("::")
+          
+          # Armazenar como método de classe com namespace completo
+          fq_class_method = "#{full_class_name}.#{mname}"
+          
+          defs << {
+            "type" => "class_method",
+            "name" => mname,
+            "fq"   => fq_class_method,
+            "path" => abs(file),
+            "line" => pos[0],
+            "col"  => pos[1]
+          }
+          
+          # Também indexar sem namespace para fallback
+          short_fq = "#{class_name}.#{mname}"
+          if short_fq != fq_class_method
+            defs << {
+              "type" => "class_method",
+              "name" => mname,
+              "fq"   => short_fq,
+              "path" => abs(file),
+              "line" => pos[0],
+              "col"  => pos[1]
+            }
+          end
+          
+          # Indexar como método de instância para busca por receiver
+          @instance_methods[full_class_name] << {
+            "name" => mname,
+            "path" => abs(file),
+            "line" => pos[0],
+            "col"  => pos[1],
+            "class_method" => true
+          }
+          
+          # Também indexar no nome curto
+          @instance_methods[class_name] << {
+            "name" => mname,
+            "path" => abs(file),
+            "line" => pos[0],
+            "col"  => pos[1],
+            "class_method" => true
+          }
+        end
+        
+        # Recurse into body (node[5])
+        walk.call(node[5]) if node[5].is_a?(Array)
       end
 
     when :command_call
@@ -484,6 +559,7 @@ end
 @relations  = Hash.new { |h, k| h[k] = Set.new }
 @references = Hash.new { |h, k| h[k] = [] }
 @instance_methods = Hash.new { |h, k| h[k] = [] } # Métodos de instância por classe
+@const_by_short = Hash.new { |h, k| h[k] = [] }   # Mapeia nome curto -> nomes completos
 
 def store_def(key, entry)
   @index[key] << entry
@@ -502,6 +578,8 @@ def index_file(file)
   if guessed && !guessed.empty?
     @const_map[guessed] ||= []
     @const_map[guessed] << abs(file)
+    short = guessed.split("::").last
+    @const_by_short[short] << guessed unless @const_by_short[short].include?(guessed)
     store_def(guessed, {
       "type" => "const",
       "name" => guessed.split("::").last,
@@ -567,8 +645,8 @@ def index_workspace
   STDOUT.flush
 end
 
-# start indexing in background
-Thread.new { index_workspace }
+# start indexing in background (apenas se não estiver em modo de teste)
+Thread.new { index_workspace } unless $TESTING
 
 # ================================================================
 # Helpers
@@ -678,6 +756,20 @@ def context_score(request_context, result_context)
   score.positive? ? score : 0
 end
 
+def receiver_match_score(full_const, receiver)
+  full_parts = full_const.to_s.split("::")
+  recv_parts = receiver.to_s.split("::")
+  score = 0
+  i = full_parts.length - 1
+  j = recv_parts.length - 1
+  while i >= 0 && j >= 0 && full_parts[i] == recv_parts[j]
+    score += 1
+    i -= 1
+    j -= 1
+  end
+  score
+end
+
 def extract_context_from_path(path)
   return nil unless path
   parts = File.dirname(path.to_s).split("/")
@@ -701,7 +793,45 @@ def handle_definition(req)
   word = req["word"] || req["symbol"]
   return [] unless word
 
+  receiver = req["receiver"] # Ex: "Trips::CacheService"
   list = []
+
+  # Heurística para variáveis de instância: @origin -> def set_origin
+  if word.start_with?("@")
+    ivar = word.sub(/^@/, "")
+    origin_file = req["file"]
+    origin_line = req["line"]
+
+    if origin_file && !ivar.empty?
+      setter_name = "set_#{ivar}"
+      if @index[setter_name]
+        candidates = @index[setter_name].select do |e|
+          e["path"] == abs(origin_file) && e["line"]
+        end
+
+        unless candidates.empty?
+          closest = if origin_line
+            candidates.min_by { |e| (e["line"] - origin_line).abs }
+          else
+            candidates.first
+          end
+
+          return [closest].compact if closest
+        end
+      end
+    end
+  end
+
+  # Se há uma definição deste método no mesmo arquivo, priorizar ela
+  origin_file = req["file"]
+  origin_line = req["line"]
+  if origin_file && origin_line && @index[word]
+    same_file_defs = @index[word].select { |e| e["path"] == abs(origin_file) && e["line"] }
+    unless same_file_defs.empty?
+      closest = same_file_defs.min_by { |e| (e["line"] - origin_line).abs }
+      return [closest].compact
+    end
+  end
 
    # Caso especial: controller#action ou reservations#cancel
   if word.include?("#")
@@ -730,6 +860,114 @@ def handle_definition(req)
           }
         end
       end
+    end
+  end
+
+  # Se temos receiver (ex: Trips::CacheService), buscar método nessa classe
+  if receiver && !receiver.empty?
+    exact_matches = []
+    partial_matches = []
+
+    parts = receiver.split("::")
+    short_name = parts.last
+    possible_receivers = []
+
+    # 1) Melhor candidato de nome completo com base em @const_by_short
+    if @const_by_short[short_name] && !@const_by_short[short_name].empty?
+      best_full = @const_by_short[short_name].max_by { |full| receiver_match_score(full, receiver) }
+      possible_receivers << best_full if best_full
+    end
+
+    # 2) Receiver como escrito e nome curto
+    possible_receivers << receiver
+    possible_receivers << short_name
+    possible_receivers.uniq!
+
+    possible_receivers.each_with_index do |recv, idx|
+      is_exact = (idx == 0) # primeira variação é a mais específica
+      
+      # Buscar método de instância
+      methods = find_instance_method(recv, word)
+      methods.each do |m|
+        result = {
+          "type" => "method",
+          "name" => word,
+          "fq"   => "#{recv}##{word}",
+          "path" => m["path"],
+          "line" => m["line"],
+          "col"  => m["col"],
+          "preview" => preview_line(m["path"], m["line"])
+        }
+        
+        if is_exact
+          exact_matches << result
+        else
+          partial_matches << result
+        end
+      end
+
+      # Buscar método de classe (self.method)
+      fq_method = "#{recv}.#{word}"
+      if @index[fq_method]
+        @index[fq_method].each do |entry|
+          if is_exact
+            exact_matches << entry
+          else
+            partial_matches << entry
+          end
+        end
+      end
+    end
+
+    all_matches = exact_matches + partial_matches
+    unless all_matches.empty?
+      list = sanitize(all_matches.uniq)
+
+      if receiver
+        begin
+          scores = list.map do |entry|
+            if entry["path"]
+              receiver_match_score(path_to_const(entry["path"]), receiver)
+            else
+              0
+            end
+          end
+          best_recv_score = scores.max || 0
+
+          if best_recv_score > 0
+            list = list.select do |entry|
+              entry["path"] &&
+                receiver_match_score(path_to_const(entry["path"]), receiver) == best_recv_score
+            end
+          end
+        rescue
+        end
+      end
+
+      origin_file = req["file"]
+      if origin_file
+        origin_ctx = extract_context_from_path(origin_file)
+        if origin_ctx
+          list.sort_by! do |entry|
+            ctx = extract_context_from_path(entry["path"])
+            base = ctx ? context_score(origin_ctx, ctx) : 0
+
+            # Boost adicional: quanto bem o arquivo combina com o receiver pelo caminho
+            if receiver && entry["path"]
+              begin
+                guessed_const = path_to_const(entry["path"])
+                base += receiver_match_score(guessed_const, receiver) * 5000
+              rescue
+              end
+            end
+
+            base += 10_000 if exact_matches.include?(entry)
+            -base
+          end
+        end
+      end
+
+      return list
     end
   end
 
@@ -763,27 +1001,15 @@ def handle_definition(req)
 end
 
 def handle_references(req)
-  sym = req["symbol"] || req["word"]
-  return [] unless sym
-
+  word = req["word"] || req["symbol"]
+  return [] unless word
+  receiver = req["receiver"]
+  
   list = []
 
-  if @references[sym]
-    list.concat(@references[sym])
-  end
-
-  # Para símbolos com namespace ou variação simples, tenta chave reduzida
-  if sym.include?("::")
-    short = sym.split("::").last
-    if @references[short]
-      list.concat(@references[short])
-    end
-  end
-
   # Caso especial: controller#action vindo de rotas
-  if sym.include?("#")
-    ctrl_raw, act = sym.split("#", 2)
-
+  if word.include?("#")
+    ctrl_raw, act = word.split("#", 2)
     ctrl_class = if ctrl_raw.include?("::")
       ctrl_raw
     else
@@ -802,21 +1028,151 @@ def handle_references(req)
         }
       end
     end
+    return sanitize(list.uniq)
   end
 
-  # Fallback: se ainda não há referências estruturadas, usar @relations para
-  # localizar arquivos que mencionam a constante (ex.: RoutesBasis)
-  if list.empty? && @relations[sym]
-    @relations[sym].each do |file|
-      list.concat(find_symbol_occurrences(file, sym))
+  origin_file = req["file"] ? abs(req["file"]) : nil
+  origin_line = req["line"]
+  def_class = nil
+
+  # Se não há receiver explícito (ex: estamos em "def call"), tentar inferir
+  # a classe/módulo da definição do método no mesmo arquivo ou do path
+  if (!receiver || receiver.empty?) && origin_file
+    if origin_line && @index[word]
+      same_file_defs = @index[word].select do |e|
+        e["path"] == origin_file && e["line"] && e["fq"] && e["type"] == "method"
+      end
+
+      unless same_file_defs.empty?
+        closest = same_file_defs.min_by { |e| (e["line"] - origin_line).abs }
+        if closest && closest["fq"]
+          parts = closest["fq"].split("::")
+          if parts.length > 1
+            def_class = parts[0..-2].join("::")
+            receiver = def_class
+          end
+        end
+      end
+    end
+
+    if (!receiver || receiver.empty?)
+      begin
+        guessed = path_to_const(origin_file)
+        if guessed && !guessed.empty?
+          def_class ||= guessed
+          receiver = guessed
+        end
+      rescue
+      end
+    end
+  end
+
+  # 1. Busca por chamadas de método (se houver receiver)
+  if receiver && !receiver.empty?
+    candidates = []
+    parts = receiver.split("::")
+
+    if parts.length >= 2
+      # Gerar aliases mantendo sempre pelo menos módulo+classe
+      # Ex: ["Sales::Trips::CacheService", "Trips::CacheService"]
+      (0..parts.length - 2).each do |i|
+        candidates << parts[i..-1].join("::")
+      end
+    else
+      candidates << receiver
+    end
+
+    candidates.uniq.each do |recv|
+      next unless @references[recv]
+
+      calls = @references[recv].select { |ref| ref["method"] == word }
+
+      if def_class
+        def_parts = def_class.split("::")
+        min_required = [def_parts.length - 1, 1].max
+
+        calls = calls.select do |ref|
+          ref_recv = ref["receiver"]
+          next false unless ref_recv
+          score = receiver_match_score(def_class, ref_recv)
+          score >= min_required
+        end
+      end
+
+      list.concat(calls)
+    end
+  end
+
+  # Fallback: se não achamos nada com receivers específicos mas conhecemos a classe
+  # do método, tentar pelas referências do nome curto (ex: "CacheService") e
+  # manter apenas as que tiverem melhor compatibilidade de namespace.
+  if list.empty? && def_class
+    short_name = def_class.split("::").last
+    if short_name && @references[short_name]
+      short_calls = @references[short_name].select { |ref| ref["method"] == word }
+
+      unless short_calls.empty?
+        best_score = short_calls.map { |ref|
+          ref_recv = ref["receiver"]
+          receiver_match_score(def_class, ref_recv.to_s)
+        }.max || 0
+
+        if best_score > 0
+          short_calls.select! do |ref|
+            ref_recv = ref["receiver"]
+            receiver_match_score(def_class, ref_recv.to_s) == best_score
+          end
+        end
+
+        list.concat(short_calls)
+      end
+    end
+  end
+
+  # 2. Busca por referências à constante (Classe/Módulo)
+  # Se o usuário clicou em 'CacheService' de 'Trips::CacheService'
+  full_symbol = receiver ? "#{receiver}::#{word}" : word
+  
+  # Referências onde a constante é usada como receiver (ex: CacheService.new)
+  if @references[full_symbol]
+    list.concat(@references[full_symbol])
+  end
+  
+  # Se word contém :: (ex: Trips::CacheService sem receiver separado), tratar também
+  if word.include?("::") && @references[word]
+    list.concat(@references[word])
+  end
+
+  # 3. Fallback: Busca textual
+  # Se encontramos referências estruturadas, evitamos busca textual ampla
+  # Mas se não encontramos nada, ou se é uma busca por classe, tentamos text search
+  
+  search_terms = []
+  
+  if list.empty?
+    # Se não achou nada estruturado, tenta busca textual
+    search_terms << full_symbol
+    # Só busca word solta se não tiver receiver (evitar ruído para métodos comuns)
+    search_terms << word if word != full_symbol && !receiver 
+  else
+    # Se achou estruturado, busca textual apenas pelo símbolo completo (para achar includes, etc)
+    search_terms << full_symbol
+  end
+  
+  search_terms.uniq.each do |term|
+    next if term.length < 3
+    if @relations[term]
+      @relations[term].each do |file|
+        list.concat(find_symbol_occurrences(file, term))
+      end
     end
   end
 
   list = sanitize(list.uniq)
 
-  origin_file = req["file"]
-  if origin_file
-    origin_ctx = extract_context_from_path(origin_file)
+  origin_file_for_ctx = req["file"]
+  if origin_file_for_ctx
+    origin_ctx = extract_context_from_path(origin_file_for_ctx)
     if origin_ctx
       list.sort_by! do |entry|
         ctx = extract_context_from_path(entry["path"])
@@ -826,6 +1182,75 @@ def handle_references(req)
   end
 
   list
+end
+
+def handle_reindex_file(req)
+  file_path = req["file"]
+  return unless file_path
+
+  abs_path = abs(file_path)
+  
+  # Se o arquivo não existe, removê-lo dos índices
+  if !File.exist?(abs_path)
+    remove_file_from_index(abs_path)
+    return
+  end
+
+  # Remover entradas antigas deste arquivo
+  remove_file_from_index(abs_path)
+  
+  # Re-indexar o arquivo
+  begin
+    index_file(file_path)
+    STDERR.puts "Re-indexed: #{file_path}"
+  rescue => e
+    STDERR.puts "Error re-indexing #{file_path}: #{e.message}"
+  end
+end
+
+def remove_file_from_index(abs_path)
+  # Remover definições
+  @index.each do |key, entries|
+    @index[key] = entries.reject { |e| e["path"] == abs_path }
+  end
+  @index.delete_if { |k, v| v.empty? }
+
+  # Remover referências
+  @references.each do |key, refs|
+    @references[key] = refs.reject { |r| r["path"] == abs_path }
+  end
+  @references.delete_if { |k, v| v.empty? }
+
+  # Remover métodos de instância
+  @instance_methods.each do |class_name, methods|
+    @instance_methods[class_name] = methods.reject { |m| m["path"] == abs_path }
+  end
+  @instance_methods.delete_if { |k, v| v.empty? }
+
+  # Remover do const_map
+  @const_map.each do |const, files|
+    @const_map[const] = files.reject { |f| f == abs_path }
+  end
+  @const_map.delete_if { |k, v| v.empty? }
+
+  # Remover relações
+  @relations.each do |sym, files|
+    files.delete(abs_path)
+  end
+  @relations.delete_if { |k, v| v.empty? }
+end
+
+def handle_reindex_workspace
+  # Limpar todos os índices
+  @index.clear
+  @const_map.clear
+  @relations.clear
+  @references.clear
+  @instance_methods.clear
+   @const_by_short.clear
+
+  # Re-indexar em background
+  Thread.new { index_workspace }
 end
 
 def process_command(cmd)
@@ -839,6 +1264,12 @@ def process_command(cmd)
              handle_definition(cmd)
            when "references"
              handle_references(cmd)
+           when "reindex_file"
+             handle_reindex_file(cmd)
+             { status: "ok", message: "File re-indexed" }
+           when "reindex_workspace"
+             handle_reindex_workspace
+             { status: "ok", message: "Workspace re-indexing started" }
            else
              nil
            end
@@ -849,20 +1280,22 @@ rescue => e
   send_reply(id, nil) if id
 end
 
-# Main loop: lê uma linha JSON por vez de STDIN
-Thread.new do
-  while (line = STDIN.gets)
-    line = line.strip
-    next if line.empty?
+# Main loop: lê uma linha JSON por vez de STDIN (apenas se não estiver em modo de teste)
+unless $TESTING
+  Thread.new do
+    while (line = STDIN.gets)
+      line = line.strip
+      next if line.empty?
 
-    begin
-      msg = JSON.parse(line)
-    rescue JSON::ParserError
-      STDERR.puts "Invalid JSON input: #{line.inspect}"
-      next
+      begin
+        msg = JSON.parse(line)
+      rescue JSON::ParserError
+        STDERR.puts "Invalid JSON input: #{line.inspect}"
+        next
+      end
+
+      next unless msg.is_a?(Hash)
+      process_command(msg)
     end
-
-    next unless msg.is_a?(Hash)
-    process_command(msg)
-  end
-end.join
+  end.join
+end

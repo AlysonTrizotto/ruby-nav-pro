@@ -7,7 +7,7 @@
     "email": "alysontrizotto1@gmail.com"
   },
   "description": "Ruby/Rails navigation: go-to-definition and find-references (AST-based).",
-  "version": "1.0.0",
+  "version": "1.3.2",
   "repository": {
     "type": "git",
     "url": "https://github.com/alysontrizotto/ruby-nav-pro"
@@ -15,8 +15,12 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Programming Languages"],
-  "activationEvents": ["onLanguage:ruby"],
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:ruby"
+  ],
   "main": "./extension.js",
   "contributes": {
     "commands": [
@@ -27,6 +31,10 @@
       {
         "command": "rubyNav.showReferences",
         "title": "Ruby: Show References"
+      },
+      {
+        "command": "rubyNav.reindexWorkspace",
+        "title": "Ruby: Re-indexar Workspace"
       }
     ],
     "keybindings": [
@@ -44,8 +52,17 @@
     "languages": [
       {
         "id": "ruby",
-        "aliases": ["Ruby", "ruby"],
-        "extensions": [".rb", ".rake", ".gemspec", ".ru", ".erb"],
+        "aliases": [
+          "Ruby",
+          "ruby"
+        ],
+        "extensions": [
+          ".rb",
+          ".rake",
+          ".gemspec",
+          ".ru",
+          ".erb"
+        ],
         "configuration": "./syntaxes/ruby.tmLanguage.json"
       }
     ]
