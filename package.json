@@ -7,7 +7,8 @@
     "email": "alysontrizotto1@gmail.com"
   },
   "description": "Ruby/Rails navigation: go-to-definition and find-references (AST-based).",
-  "version": "1.3.2",
+  "icon": "images/logo.png",
+  "version": "1.5.5",
   "repository": {
     "type": "git",
     "url": "https://github.com/alysontrizotto/ruby-nav-pro"
@@ -23,6 +24,21 @@
   ],
   "main": "./extension.js",
   "contributes": {
+    "configuration": {
+      "type": "object",
+      "title": "Ruby Navigation",
+      "properties": {
+        "rubyNav.backend": {
+          "type": "string",
+          "enum": [
+            "js",
+            "ruby"
+          ],
+          "default": "js",
+          "description": "Backend usado pelo RubyNav: 'js' (Node nativo, não depende de Ruby instalado) ou 'ruby' (servidor Ruby original)."
+        }
+      }
+    },
     "commands": [
       {
         "command": "rubyNav.goToDefinitionManual",
