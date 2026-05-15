@@ -5,6 +5,46 @@ Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+## [1.6.0] - 2026-05-15
+
+### Added
+
+- **Go to Definition (método sem receiver)**: inferência da classe lexical (`infer_lexical_self_receiver` + filtro em `@index`) para saltar direto ao `def` da classe em vez de listar homónimos noutros ficheiros.
+- **Find References com cursor em palavra-chave**: expansão no `extension.js` e no servidor (`expand_ruby_decl_keyword_under_cursor`) para `def` / `defs` / `class` / `module` → nome do método ou constante declarada.
+- **Find References para `@ivar`**: ocorrências do token no ficheiro; quando existe leitor alinhado (`attr_reader`), junta chamadas indexadas ao método com o mesmo nome (ex. `instance` / `@instance`).
+- **Find References a partir de `module` / `class`**: AST indexa declarações com FQ e linha/coluna; agrega chamadas em `@references` pela constante e por prefixos (`Admin` → `Admin::Crud::Show`); no ficheiro da declaração, `reference_explicit_const_in_line?` evita misturar chamadas só implícitas a `self` com usos reais da constante.
+- **Diagnóstico**: definição `rubyNav.debug` no cliente; painel de saída **RubyNav** com pedidos/respostas JSON e stderr; comando **RubyNav: Abrir registo de diagnóstico**; variável de ambiente `RUBYNAV_DEBUG=1` no processo Ruby quando o debug está ligado (linhas `[rubynav]` no stderr).
+- **`cwd` do servidor**: usa `workspaceFolders[0]` em vez de `workspace.rootPath` (evita indexação vazia no Cursor quando `rootPath` não está definido).
+- **F12 / Shift+F12**: `DefinitionProvider` e `ReferenceProvider` no `extension.js` para `languageId` `ruby` e `erb`, reutilizando o mesmo pedido ao servidor que os comandos manuais.
+- **Indexação ERB**: `**/*.erb` no glob do servidor e no watcher do cliente; extração de Ruby em `<%`, `<%=`, `<%-` (comentários `<%#` ignorados); offsets de linha/coluna para defs/refs no ficheiro template.
+- **AST**: recursão nos ramos `:call` e `:command_call` para capturar cadeias como `User.where(...).count` (também beneficia ficheiros `.rb`).
+- **RouteIndexer**: `root`, `resource` (singular, `path:` / `only:` / `except:`), verbo HTTP `options`, `namespace :x, path: 'y'`, `resources …, path:`, `only:` / `except:` (array ou `%i()`), REST parcial com `resources … do` quando a linha traz `only`/`except`; junção de caminhos evita `//` quando o literal começa com `/`; teste `tests/test_route_indexer_extended.rb`.
+- **Índice**: após `remove_file_from_index`, `@const_by_short` é reconstruído a partir de `@const_map` para manter nomes curtos coerentes.
+
+### Fixed
+
+- **handle_references**: `origin_file_for_ctx` passa a ser definido antes do primeiro uso (corrige erro ao pedir referências com ocorrências de ivar).
+
+- **Variáveis locais vs. método homónimo**: o atalho “mesmo ficheiro” em `@index[word]` deixou de aplicar a tokens com forma de local (`local_var_definition_context?`), evitando que `result = 1 … result` salte para `def result`.
+- **Variáveis locais**: `find_local_variable_definition` lê o ficheiro pelo caminho canónico `abs(file)` em vez do argumento bruto (evita falhas quando o caminho não coincide com o `cwd`).
+- **attr_reader / leitor de ivar**: indexação de `attr_reader`, `attr_accessor`, `attr_writer`; Go to Def em `instance` salta para o último `@instance =` antes do cursor no mesmo ficheiro; Show References inclui ocorrências de `@instance`.
+
+### Removed
+
+- Configuração `rubyNav.backend` (`js` / `ruby`): o cliente só implementa o processo Ruby (`server/server.rb`); a opção `js` não existia no código.
+
+### Changed
+
+- **Prioridade defs/refs**: bónus forte para mesmo ficheiro, mesmo diretório e classe declarada (`fq`) alinhada ao `receiver` inferido; `receiver_match_score` no sort de definições com receiver passa a peso menor (evita “roubar” a métodos de outras pastas); referências textuais (`type: text`) descem na lista; desempate em `@const_by_short` favorece constantes cujo ficheiro indexado está no mesmo diretório que o ficheiro de origem.
+
+- README: arquitetura real (entrada `extension.js`, IPC JSON com o servidor Ripper), ficheiros indexados vs. `.erb`, e limitações do parser de rotas.
+
+- `extension.js`: registo de **DefinitionProvider** e **ReferenceProvider** para `ruby` e `erb` (F12 / Shift+F12 quando o RubyNav responde).
+
+- `package.json`: `activationEvents` inclui `onLanguage:erb` para ativar a extensão em views ERB com `languageId` `erb`.
+
 ## [1.3.0] - 2025-11-28
 
 ### ✨ Adicionado

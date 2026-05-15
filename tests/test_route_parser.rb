@@ -2,7 +2,7 @@
 
 # Script de teste para verificar o parsing de rotas e mapeamento de controllers
 
-require_relative 'server/server'
+require_relative "../server/server"
 
 # Carregar o RouteIndexer
 include RouteIndexer

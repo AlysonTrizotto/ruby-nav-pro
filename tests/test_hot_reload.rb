@@ -5,7 +5,7 @@
 # Definir flag para evitar inicialização do servidor
 $TESTING = true
 
-require_relative 'server/server'
+require_relative "../server/server"
 
 # Limpar índices anteriores
 @index = Hash.new { |h, k| h[k] = [] }

@@ -2,7 +2,7 @@
 
 # Test script para verificar a funcionalidade de métodos de instância
 
-require_relative 'server/server'
+require_relative "../server/server"
 
 # Limpar índices anteriores
 @index = Hash.new { |h, k| h[k] = [] }

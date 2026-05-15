@@ -3,7 +3,7 @@
 # Teste para validar Show References com receiver
 
 $TESTING = true
-require_relative 'server/server'
+require_relative "../server/server"
 
 # Limpar índices
 @index = Hash.new { |h, k| h[k] = [] }

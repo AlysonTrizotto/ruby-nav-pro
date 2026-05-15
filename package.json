@@ -8,7 +8,7 @@
   },
   "description": "Ruby/Rails navigation: go-to-definition and find-references (AST-based).",
   "icon": "images/logo.png",
-  "version": "1.5.5",
+  "version": "1.6.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/alysontrizotto/ruby-nav-pro"
@@ -20,26 +20,27 @@
     "Programming Languages"
   ],
   "activationEvents": [
-    "onLanguage:ruby"
+    "onLanguage:ruby",
+    "onLanguage:erb"
   ],
   "main": "./extension.js",
   "contributes": {
     "configuration": {
-      "type": "object",
-      "title": "Ruby Navigation",
+      "title": "RubyNav",
       "properties": {
-        "rubyNav.backend": {
-          "type": "string",
-          "enum": [
-            "js",
-            "ruby"
-          ],
-          "default": "js",
-          "description": "Backend usado pelo RubyNav: 'js' (Node nativo, não depende de Ruby instalado) ou 'ruby' (servidor Ruby original)."
+        "rubyNav.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Regista pedidos/respostas JSON e stderr Ruby no painel View → Output (canal \"RubyNav\"). Não usa \"Developer: Show Logs\"."
         }
       }
     },
     "commands": [
+      {
+        "command": "rubyNav.showOutput",
+        "title": "RubyNav: Mostrar registo / log (Output)",
+        "category": "RubyNav"
+      },
       {
         "command": "rubyNav.goToDefinitionManual",
         "title": "Ruby: Go to Definition (Manual)"

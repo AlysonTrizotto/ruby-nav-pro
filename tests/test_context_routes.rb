@@ -2,7 +2,7 @@
 
 # Test script para verificar a melhoria de contexto em referências de rotas
 
-require_relative 'server/server'
+require_relative "../server/server"
 
 # Limpar índices anteriores
 @index = Hash.new { |h, k| h[k] = [] }

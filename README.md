@@ -9,6 +9,7 @@ Encontre **definições** e **referências** de classes, métodos, controllers e
 
 - **Go to Definition (Manual)** (`Ctrl+D`)
   - Vai direto para a definição da classe ou método sob o cursor.
+  - O mesmo fluxo alimenta **F12** (Go to Definition nativo), quando o RubyNav devolve um resultado.
   - Entende `controller#action` e resolve para o método correto no controller.
   - Usa índices em memória baseados em AST, otimizados para monolitos grandes.
 
@@ -21,25 +22,30 @@ Encontre **definições** e **referências** de classes, métodos, controllers e
     - Por arquivo (caminho relativo).
     - E dentro do arquivo, por classe/método.
   - Visual limpo, com separadores de grupos, para navegar como em um “grep inteligente”.
+  - **Shift+F12** (Find All References nativo) usa o mesmo índice quando o RubyNav responde.
 
 - **Suporte a Rails**
-  - Parser simples de `config/routes.rb`:
-    - `namespace`, `scope module/path`, `resources`, `member do`, `get/post/put/patch/delete`, `match`.
+  - Parser simples de `config/routes.rb`, incluindo entre outros:
+    - `namespace` (e `namespace :x, path: 'y'` para o prefixo URL),
+    - `scope` com `module:` / `path:`,
+    - `resources` com REST, `path:`, `only:`, `except:` (também com `… do` + `only`/`except` em linha),
+    - `member` / rotas com `get :action` dentro de `resources`,
+    - `get/post/...` com `to: 'controller#action'`, `match` com `via:`.
   - Mapeia rotas para `Controller#action` e exibe essas rotas como referências.
 
 - **Indexação incremental em background**
   - Assim que um workspace Ruby é aberto:
-    - Um servidor Ruby é iniciado em segundo plano.
-    - Todos os arquivos `**/*.rb` (exceto `spec`, `test`, `vendor`, `node_modules`) são indexados.
+    - Um servidor Ruby é iniciado em segundo plano (`extension.js` faz `spawn` de `ruby server/server.rb`).
+    - Ficheiros **`**/*.rb`** e **`**/*.erb`** (exceto `spec`, `test`, `vendor`, `node_modules`) são indexados.
+    - Em **ERB**, só o Ruby dentro de `<% … %>`, `<%= … %>`, `<%- … %>` (etc.) é analisado pelo Ripper; HTML à volta não entra no AST.
   - Barra de status:
     - `RubyNav: indexando...` com progresso em `%`.
     - `RubyNav pronto` ao finalizar.
 
 - **Hot-reload automático** ✨
   - Detecta automaticamente quando você:
-    - Cria um novo arquivo `.rb`
-    - Modifica um arquivo existente
-    - Deleta um arquivo
+    - Cria ou altera um arquivo `.rb` ou `.erb`
+    - Deleta um arquivo `.rb` ou `.erb`
   - Re-indexa apenas o arquivo modificado (incremental)
   - Não precisa reiniciar o editor!
   - Comando manual disponível: `Ruby: Re-indexar Workspace` para re-indexação completa
@@ -47,27 +53,35 @@ Encontre **definições** e **referências** de classes, métodos, controllers e
 
 ## 🧠 Como funciona
 
-Por baixo dos panos:
+### Arquitetura
 
-- Um servidor Ruby (via `server/server.rb`) é iniciado quando a extensão ativa.
-- Ele:
-  - Usa **Ripper** para gerar AST dos arquivos Ruby.
-  - Extrai:
-    - Definições de classes, módulos e métodos.
-    - Chamadas de métodos com receiver (`Foo.bar`, `Namespace::Foo.baz`).
-    - Métodos de instância em controllers (para `controller#action`).
-  - Analisa `config/routes.rb` para criar índices de `ROUTES` e `ROUTE_BY_ACTION`.
-  - Mantém índices globais em memória para responder rápido a:
-    - `definition`
-    - `references`
+1. **`extension.js`** (entrada declarada em `package.json` como `main`) ativa-se com ficheiros Ruby e regista comandos e atalhos.
+2. Arranca um processo **`ruby`** com `server/server.rb` (cwd = raiz do workspace), que carrega os módulos em `server/ruby_nav/` (Ripper, índice, comandos).
+3. Comunicação **JSON, uma linha por mensagem**, em `stdin` / `stdout` entre o editor e o processo Ruby.
 
-Do lado do editor:
+### O que o servidor faz
 
-- A extensão envia comandos simples via `stdin/stdout` para o servidor em JSON:
-  - `{ command: "definition", word, file, line, col }`
-  - `{ command: "references", symbol, file }`
-- Recebe resultados já priorizados por **contexto**:
-  - Arquivos em `app/controllers`, `app/models`, etc. são priorizados quando o comando parte desse mesmo contexto.
+- Usa **Ripper** para gerar AST dos ficheiros **`.rb`** e dos **fragmentos Ruby em `.erb`**.
+- Extrai:
+  - Definições de classes, módulos e métodos.
+  - Chamadas de métodos com receiver (`Foo.bar`, `Namespace::Foo.baz`).
+  - Métodos de instância em controllers (para `controller#action`).
+- Analisa `config/routes.rb` com um **parser próprio, limitado** (ver limitações), preenchendo estruturas como `ROUTE_BY_ACTION`.
+- Mantém índices em memória para responder a `definition` e `references`.
+
+### O que o cliente envia (exemplos)
+
+- `{ "command": "definition", "word", "receiver", "file", "line", "col", "id": "…" }`
+- `{ "command": "references", "symbol", "receiver", "file", "line", "col", "id": "…" }`
+
+Os resultados são priorizados por **contexto** (por exemplo `app/controllers` vs. `lib/`) quando faz sentido.
+
+### Ficheiros `.erb`
+
+As extensões `.erb` partilham o `language id` Ruby para **gramática / cor**.  
+**Indexação:** o servidor extrai o Ruby das tags (`<%`, `<%=`, `<%-`, …), corre o Ripper em cada fragmento e mapeia **linha/coluna** de volta ao ficheiro `.erb`. HTML fora das tags não é AST.
+
+**Variáveis locais em ERB:** o “go to definition” de locais (`:var_ref`) continua **desativado** em `.erb` (o Ripper do ficheiro completo não corresponde ao template).
 
 ---
 
@@ -85,13 +99,15 @@ Você também encontra esses comandos na Command Palette (`Ctrl+Shift+P`):
 - `Ruby: Show References`
 - `Ruby: Re-indexar Workspace` (força re-indexação completa)
 
+**Nota:** os comandos acima e os atalhos **Ctrl+D** / **Ctrl+Shift+D** continuam disponíveis. Além disso, o editor pode usar **F12** (Go to Definition) e **Shift+F12** (Find All References) quando o RubyNav é o provider que devolve resultados — o mesmo protocolo ao servidor Ruby.
+
 ---
 
 ## ✅ Requisitos
 
 - **VS Code / Windsurf** `>= 1.85.0`
-- **Ruby** `>= 3.x` disponível no `PATH` do editor  
-  (a extensão chama `ruby server/server.rb --index` no workspace)
+- **Ruby** `>= 3.x` disponível no `PATH` do processo do editor  
+  (a extensão executa `ruby server/server.rb` com o diretório de trabalho na raiz do workspace).
 - Projeto Ruby / Rails aberto como **pasta** (não apenas arquivo solto), para que:
   - O servidor use a raiz correta.
   - `config/routes.rb` e `app/**` sejam encontrados.
@@ -133,10 +149,12 @@ Você também encontra esses comandos na Command Palette (`Ctrl+Shift+P`):
 - Não é um LSP completo:
   - Focado em navegação (defs + refs).
   - Não oferece code completion, linting ou refactoring.
+- **Templates `.erb`:** além de cor/gramática, o **índice** inclui chamadas e defs nos tags Ruby; **não** há `path_to_const` nem `class|module` por ficheiro como em `.rb`. Chamadas encadeadas muito aninhadas podem perder alguns passos.
 - Não entende todos os metaprogramming avançados:
   - Macros ou meta-definições muito dinâmicas podem não ser indexadas.
 - O parser de rotas é propositalmente simples:
-  - Cobrirá a maioria dos casos comuns de `routes.rb`, mas não 100% de DSLs customizadas.
+  - Cobre um subconjunto de `config/routes.rb` (`namespace`, `scope` com `module`/`path`, `resources`, rotas HTTP com `to:`, `match` com `via:`, etc.).
+  - Não cobre toda a DSL do Rails (engines isolados, `constraints` complexos, `draw`, rotas geradas dinamicamente, etc.); nesses casos as rotas podem não aparecer nas referências.
 
 ---
 

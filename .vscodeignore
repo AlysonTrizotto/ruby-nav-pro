@@ -1,0 +1,19 @@
+# Desenvolvimento e CI
+.github/**
+tests/**
+.ruby-lsp/**
+.cursor/**
+
+# Documentação no repo (não necessária em runtime)
+docs/**
+
+# Ruby do projeto (a extensão corre `ruby server/server.rb` sem Bundler)
+Gemfile
+Gemfile.lock
+
+# Artefactos e dependências
+*.vsix
+node_modules/**
+
+# Git
+.git/**
